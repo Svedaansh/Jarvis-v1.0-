@@ -1,0 +1,584 @@
+# Jarvis AI Assistant - Quantum Command Interface v4.0
+# Version 3.8 - API Key Security Update & Icon Filename Match.
+
+# ----------------------------------------------------------------------
+# 1. Imports
+# ----------------------------------------------------------------------
+import tkinter as tk
+from tkinter import scrolledtext, messagebox
+import threading
+import time
+import requests
+import json
+import os # NEW: Required for environment variables
+import random
+import webbrowser
+import subprocess
+import psutil # For system metrics
+from docx import Document # For reading .docx files
+import PyPDF2 # For reading .pdf files
+
+# --- CRITICAL SECURITY STEP: Load API Key from Environment ---
+# The code now looks for the key in your system's environment variables.
+# You MUST set an environment variable named GEMINI_API_KEY for the script to run.
+API_KEY = os.environ.get("GEMINI_API_KEY")
+
+if not API_KEY:
+    print("CRITICAL ERROR: GEMINI_API_KEY environment variable not set.")
+    # Exit or provide a dummy key if running in a context where real API calls are not essential
+    # For now, we will use an empty string, which will cause API calls to fail gracefully.
+    API_KEY = ""
+# ----------------------------------------------------------------------
+# 2. API & Core Functions
+# ----------------------------------------------------------------------
+
+# --- Gemini API Endpoint (Text Generation) ---
+# Used for general knowledge queries, web searches, and document summarization.
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent"
+
+def gemini_query(prompt, app_instance, use_search=False):
+    """Sends a query to the Gemini API and returns the text response."""
+    # SECURITY CHECK: Do not attempt API call if key is missing
+    if not API_KEY:
+        app_instance.update_history("Jarvis: Error - AI services are offline. Please set the GEMINI_API_KEY environment variable.")
+        return
+
+    app_instance.update_history("Jarvis: Accessing Knowledge Base...")
+    
+    # Structure the payload
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        # Use Google Search grounding for real-time information if requested
+        "tools": [{"google_search": {}}] if use_search else [],
+        "systemInstruction": {
+            "parts": [{"text": "You are a helpful, professional AI assistant named Jarvis. Be concise and accurate. Format lists clearly."}]
+        }
+    }
+
+    headers = {'Content-Type': 'application/json'}
+    params = {'key': API_KEY}
+    
+    try:
+        response = requests.post(GEMINI_API_URL, headers=headers, params=params, json=payload, timeout=20)
+        response.raise_for_status() 
+
+        result = response.json()
+        
+        # Check for valid candidate and content
+        candidate = result.get('candidates', [{}])[0]
+        text = candidate.get('content', {}).get('parts', [{}])[0].get('text', 'Error: Could not parse AI response.')
+        
+        # Display text response (bypassing TTS to save quota)
+        app_instance.update_history(f"Jarvis: {text}")
+
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Network or API Error: {e}"
+        app_instance.update_history(f"Jarvis: Error - A network error occurred while contacting the AI: {error_msg}")
+    except Exception as e:
+        error_msg = f"Processing Error: {e}"
+        app_instance.update_history(f"Jarvis: Error - An unexpected error occurred: {e}")
+
+# --- Text-to-Speech (TTS) Function ---
+# NOTE: This function is primarily used for short, immediate feedback (greetings/errors)
+# to conserve the limited free-tier API quota. It uses the TTS preview model.
+TTS_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+
+def speak_tts(text):
+    """Calls the TTS API for audio generation (non-blocking)."""
+    # SECURITY CHECK: Do not attempt API call if key is missing
+    if not API_KEY:
+        print("TTS skipped: API Key is missing.")
+        return
+        
+    # Only speak short phrases to conserve quota
+    if len(text.split()) > 20:
+        print("TTS skipped for long response to conserve quota.")
+        return
+
+    payload = {
+        "contents": [{"parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}
+            }
+        },
+        "model": "gemini-2.5-flash-preview-tts"
+    }
+    
+    params = {'key': API_KEY}
+    headers = {'Content-Type': 'application/json'}
+
+    try:
+        # Using a higher timeout for TTS as it can be slow
+        response = requests.post(TTS_API_URL, headers=headers, params=params, json=payload, timeout=30)
+        response.raise_for_status() 
+        # Note: Since standard Python console cannot play raw audio, we just log success.
+        # print("TTS API Call Successful.") 
+
+    except requests.exceptions.HTTPError as errh:
+        # Status 429 is quota error, we suppress the TTS error message for simplicity
+        if response.status_code == 429:
+            print("TTS API Error: Status 429. Quota exceeded.")
+        else:
+            print(f"An error occurred during TTS: HTTP Error {errh}")
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred during TTS: Request Exception: {e}")
+    except Exception as e:
+        print(f"An error occurred during TTS: {e}")
+
+# --- Document Reader Function ---
+def read_document_text(file_path, app_instance):
+    """Reads text from PDF or DOCX file using its full path."""
+    try:
+        # Check if the file exists using the provided path
+        if not os.path.exists(file_path):
+            # If the user provided a relative path (no directory), offer guidance
+            if not os.path.isabs(file_path):
+                error_message = (
+                    f"File Not Found: Jarvis could not find '{file_path}'. "
+                    "Please provide the **full file path** (e.g., C:\\Users\\You\\Documents\\file.docx) "
+                    "so I can access it."
+                )
+            # If the user provided a full path but it still doesn't exist
+            else:
+                 error_message = (
+                    f"File Not Found: The file path '{file_path}' does not exist. "
+                    "Please verify the path is correct."
+                )
+            app_instance.update_history(f"Jarvis: Error - {error_message}")
+            return None
+
+        # --- Handle PDF files ---
+        if file_path.lower().endswith('.pdf'):
+            with open(file_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text()
+            return text
+
+        # --- Handle DOCX files ---
+        elif file_path.lower().endswith('.docx'):
+            doc = Document(file_path)
+            text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+            return text
+
+        # --- Handle other file types ---
+        else:
+            app_instance.update_history(f"Jarvis: Error - Unsupported file type. I can only summarize .pdf or .docx files.")
+            return None
+
+    except ImportError:
+        # Catches if PyPDF2 or python-docx is not installed
+        pkg_name = 'PyPDF2' if file_path.lower().endswith('.pdf') else 'python-docx'
+        app_instance.update_history(
+            f"Jarvis: An error occurred during the process of reading a document file. "
+            f"The system reported that the package required to access the file could not be found. "
+            f"Please run 'pip install {pkg_name}' in your terminal to fix this."
+        )
+        return None
+    except Exception as e:
+        app_instance.update_history(f"Jarvis: Error - An unexpected error occurred while reading the file: {e}")
+        return None
+
+# ----------------------------------------------------------------------
+# 3. Main Logic
+# ----------------------------------------------------------------------
+
+def main_logic(query, app_instance):
+    """Parses the user query and routes it to the appropriate function."""
+    query_lower = query.lower().strip()
+    response_text = None
+
+    # --- Section 1: Immediate Facts & Greetings (Local Knowledge) ---
+    if query_lower in ["hi", "hello", "hey"]:
+        response_text = "Hello, sir. How may I assist you today?"
+    elif query_lower in ["how are you", "how are you doing"]:
+        response_text = "I am functioning optimally, thank you for asking."
+    elif query_lower in ["thank you", "thanks"]:
+        response_text = "You are most welcome, sir. It is my pleasure to serve."
+    elif query_lower.startswith("where is that set") or query_lower.startswith("where are my reminders"):
+        # Contextual awareness check for the reminder system
+        response_text = app_instance.show_reminders()
+    elif query_lower in ["what can you do", "help"]:
+        response_text = (
+            "I can perform Web Searches, open applications (e.g., 'open youtube'), "
+            "provide general knowledge, handle Metric Conversions, set Reminders, "
+            "and Summarize .docx or .pdf files. Try 'time' or 'joke'."
+        )
+    elif query_lower == "time":
+        response_text = f"The current time is {time.strftime('%I:%M %p')}"
+    elif query_lower == "joke":
+        response_text = "Why did the computer wear glasses? Because it couldn't C-sharp!"
+    
+    # --- Section 2: System Control Commands ---
+    elif query_lower.startswith("open"):
+        app_instance.speak(f"Attempting to launch {query[5:].strip()}")
+        try:
+            # Simple application/URL launcher
+            target = query[5:].strip()
+            if target in ["browser", "web browser"]:
+                webbrowser.open("http://google.com")
+                response_text = "Opening default web browser."
+            elif target == "youtube":
+                webbrowser.open("https://www.youtube.com")
+                response_text = "Opening YouTube."
+            elif target == "calculator":
+                subprocess.Popen('calc') # Windows command
+                response_text = "Launching calculator."
+            elif target.startswith("http"):
+                webbrowser.open(target)
+                response_text = f"Opening {target} in browser."
+            else:
+                os.startfile(target) # Tries to open a file or program name
+                response_text = f"Attempting to launch {target}."
+
+        except Exception as e:
+            response_text = f"Error: Could not open {query[5:].strip()}. Details: {e}"
+
+    # --- Section 3: Document Summarization Command ---
+    # Command trigger now accepts "summarize [filename]" OR "summarize notes [filename]"
+    elif query_lower.startswith("summarize"):
+        # SECURITY CHECK: Ensure API is available for summarization
+        if not API_KEY:
+            app_instance.update_history("Jarvis: Error - AI summarization service is offline. Please set the GEMINI_API_KEY environment variable.")
+            return
+
+        try:
+            parts = query.split()
+            
+            # Find the file name argument (it might be the second or third word)
+            if len(parts) >= 2 and parts[1].endswith(('.pdf', '.docx')):
+                file_path = parts[1]
+            elif len(parts) >= 3 and parts[1] == 'notes' and parts[2].endswith(('.pdf', '.docx')):
+                file_path = parts[2]
+            else:
+                response_text = (
+                    "Jarvis: Please specify the document name or full path. "
+                    "Example: 'summarize C:\\Users\\Documents\\notes.pdf'"
+                )
+                app_instance.update_history(response_text)
+                return
+
+            app_instance.update_history(f"Jarvis: Analyzing Document: {file_path}...")
+            
+            # Use the dedicated function to read the document content
+            document_content = read_document_text(file_path, app_instance)
+
+            if document_content:
+                if len(document_content) < 50:
+                    response_text = "Error: The document appears too short or is empty. Please check the file content."
+                else:
+                    # Construct a secure, context-aware prompt using the file CONTENT
+                    summary_prompt = (
+                        "You are summarizing the content of an uploaded document. "
+                        "Please provide a concise, structured summary of the following text (2-3 paragraphs max): "
+                        f"\n\n--- DOCUMENT CONTENT ---\n{document_content}"
+                    )
+                    # Send the content (not the filename) to the AI for summarization (no search needed)
+                    app_instance.update_history("Jarvis: Requesting AI summary...")
+                    gemini_query(summary_prompt, app_instance, use_search=False)
+                    return # Exit early as gemini_query handles history update
+
+        except Exception as e:
+            response_text = f"Jarvis: An internal error occurred during summarization setup: {e}"
+
+    # --- Section 4: Reminders (Internal List) ---
+    elif query_lower.startswith("add reminder"):
+        task = query[12:].strip()
+        if task:
+            app_instance.add_reminder(task)
+            response_text = (
+                f"The task '{task}' has been saved to your session list. "
+                "Note: This is a temporary list, not a system alarm. "
+                "Please use your device's built-in calendar or clock app to set an actual notification."
+            )
+        else:
+            response_text = "Please specify the task you want to add as a reminder."
+            
+    elif query_lower == "show reminders":
+        # The result of show_reminders is automatically handled below
+        response_text = app_instance.show_reminders()
+    elif query_lower == "clear reminders":
+        app_instance.clear_reminders()
+        response_text = "All reminders have been cleared."
+
+    # --- Section 5: Metric Conversions (Local Formulas) ---
+    # Expected format: "convert [value] [unit1] to [unit2]"
+    elif query_lower.startswith("convert"):
+        parts = query_lower.split()
+        if len(parts) >= 5 and parts[3] == 'to':
+            try:
+                value = float(parts[1])
+                from_unit = parts[2]
+                to_unit = parts[4]
+                result = None
+
+                if from_unit in ['c', 'celsius'] and to_unit in ['f', 'fahrenheit']:
+                    result = (value * 9/5) + 32
+                    response_text = f"{value}°C is equal to {result:.2f}°F."
+                elif from_unit in ['f', 'fahrenheit'] and to_unit in ['c', 'celsius']:
+                    result = (value - 32) * 5/9
+                    response_text = f"{value}°F is equal to {result:.2f}°C."
+                elif from_unit in ['kg', 'kilograms'] and to_unit in ['lb', 'lbs', 'pounds']:
+                    result = value * 2.20462
+                    response_text = f"{value} kg is equal to {result:.2f} lbs."
+                elif from_unit in ['miles', 'mi'] and to_unit in ['km', 'kilometers']:
+                    result = value * 1.60934
+                    response_text = f"{value} miles is equal to {result:.2f} km."
+                else:
+                    response_text = "Conversion type not supported yet. Try temperature or mass."
+
+            except ValueError:
+                response_text = "Invalid value provided for conversion. Please use a number."
+            except Exception as e:
+                response_text = f"An error occurred during conversion: {e}"
+        else:
+            response_text = "Please use the format: 'convert [value] [unit1] to [unit2]'."
+
+    # --- Section 6: WEB SEARCH (Catch-all for general questions) ---
+    # Triggers if the query is a multi-word question or contains known question phrases.
+    elif len(query_lower.split()) > 1 or any(query_lower.startswith(phrase) for phrase in ["what is", "who is", "tell me about"]):
+        # SECURITY CHECK: Ensure AI services are available for search
+        if not API_KEY:
+            app_instance.update_history("Jarvis: Error - AI search service is offline. Please set the GEMINI_API_KEY environment variable.")
+            return
+            
+        # This sends the query to Gemini with Google Search enabled
+        gemini_query(query, app_instance, use_search=True)
+        return # Exit early as gemini_query handles history update
+
+    # --- Section 7: Command Not Recognized ---
+    else:
+        response_text = "Command not recognized. Please try a different command, or type 'help'."
+    
+    # --- Final Response Output ---
+    if response_text:
+        # Speak short responses, print long responses directly to history
+        if response_text.startswith("Jarvis:") or len(response_text.split()) < 10:
+            app_instance.speak(response_text.replace("Jarvis: ", ""))
+        else:
+            app_instance.update_history(response_text)
+
+# ----------------------------------------------------------------------
+# 4. Tkinter GUI Setup
+# ----------------------------------------------------------------------
+
+class JarvisApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        
+        # --- Set Custom Icon ---
+        # NOTE: The file name below MUST exactly match the icon file in the folder!
+        ICON_FILE_NAME = 'Screenshot 2025-10-30 234502.ico'
+        try:
+            self.iconbitmap(ICON_FILE_NAME)
+        except tk.TclError:
+            print(f"Warning: Icon file '{ICON_FILE_NAME}' not found or could not be loaded. Showing default Python icon.")
+            
+        self.title("J.A.R.V.I.S. — Quantum Command Interface v4.0")
+        self.geometry("700x280") # Reduced size
+        self.configure(bg="#0b0b0f")
+        self.resizable(False, False)
+        self.reminders = [] # Session storage for reminders
+
+        # --- Center window on screen (Position near bottom-right) ---
+        self.update_idletasks()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        ws = self.winfo_screenwidth()
+        hs = self.winfo_screenheight()
+        x = (ws - w) - 60
+        y = hs - h - 100
+        self.geometry(f'+{x}+{y}')
+
+        # --- Theme Colors ---
+        self.bg_main = "#0b0b0f"        # Matte dark base
+        self.bg_panel = "#13131a"       # Panel background
+        self.text_primary = "#00f5ff"   # Neon cyan (Jarvis text)
+        self.text_secondary = "#ff4df0" # Magenta (User text)
+        self.text_white = "#e6e6e6"
+        self.glow_blue = "#00d9ff"
+        self.glow_purple = "#c300ff"
+
+        # --- Fonts ---
+        self.font_title = ("Consolas", 13, "bold")
+        self.font_text = ("Consolas", 11)
+        self.font_button = ("Consolas", 11, "bold")
+
+        # --- Outer Frame ---
+        frame = tk.Frame(self, bg=self.bg_panel, bd=0, highlightthickness=0)
+        frame.pack(expand=True, fill="both", padx=20, pady=20)
+
+        # --- Title ---
+        title = tk.Label(
+            frame,
+            text="J.A.R.V.I.S. Neural Interface v4.0",
+            fg=self.text_primary,
+            bg=self.bg_panel,
+            font=self.font_title
+        )
+        title.pack(anchor="w")
+
+        # --- Glow Line ---
+        self.glow_line = tk.Frame(frame, bg=self.text_secondary, height=2)
+        self.glow_line.pack(fill="x", pady=(5, 10))
+
+        # --- History / Output Window (Smaller Height) ---
+        self.history_text = scrolledtext.ScrolledText(
+            frame,
+            wrap=tk.WORD,
+            height=6, # Reduced height for compact look
+            state="disabled",
+            bg=self.bg_main,
+            fg=self.text_white,
+            insertbackground=self.text_primary,
+            font=self.font_text,
+            borderwidth=0,
+            relief=tk.FLAT
+        )
+        self.history_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Tagging for color-coding the output
+        self.history_text.tag_configure("jarvis", foreground=self.text_primary)
+        self.history_text.tag_configure("user", foreground=self.text_secondary)
+
+        # --- Input Area ---
+        bottom_frame = tk.Frame(frame, bg=self.bg_panel)
+        bottom_frame.pack(fill="x")
+
+        # --- Entry Field ---
+        self.command_entry = tk.Entry(
+            bottom_frame,
+            bg=self.bg_main,
+            fg=self.text_white,
+            insertbackground=self.text_secondary,
+            font=self.font_text,
+            relief=tk.FLAT,
+            highlightthickness=2,
+            highlightbackground=self.bg_panel,
+            highlightcolor=self.text_secondary,
+            bd=0
+        )
+        self.command_entry.pack(side="left", fill="x", expand=True, padx=(10, 15), pady=(5, 10))
+        self.command_entry.bind("<Return>", lambda e: self.execute_command())
+
+        # --- EXECUTE Button (Canvas for gradient effect) ---
+        self.execute_button = tk.Canvas(bottom_frame, width=150, height=36, bg=self.bg_panel, highlightthickness=0, bd=0)
+        self.execute_button.pack(side="right", padx=(0, 10), pady=(5, 10))
+        
+        # Draw the initial gradient rectangle
+        self.gradient_button = self.execute_button.create_rectangle(
+            0, 0, 150, 36, outline="", fill=self._gradient(self.glow_blue, self.glow_purple)
+        )
+        # Draw the button text
+        self.text_button = self.execute_button.create_text(
+            75, 18, text="EXECUTE ▶", font=self.font_button, fill=self.bg_main
+        )
+        
+        # Bind commands and hover effects to the Canvas
+        self.execute_button.bind("<Button-1>", lambda e: self.execute_command())
+        self.execute_button.bind("<Enter>", lambda e: self._hover_button(True))
+        self.execute_button.bind("<Leave>", lambda e: self._hover_button(False))
+
+        # --- Animations ---
+        self.after(1000, self.initial_greeting)
+        self.animate_glow()
+
+    # --- Gradient Creation Helper ---
+    def _gradient(self, color1, color2):
+        """Creates a simple linear gradient hex mix between two colors."""
+        try:
+            # Convert hex colors to RGB tuples
+            r1, g1, b1 = self.winfo_rgb(color1)
+            r2, g2, b2 = self.winfo_rgb(color2)
+            # Calculate the mid-point color (simple average)
+            r, g, b = (r1 + r2) // 2, (g1 + g2) // 2, (b1 + b2) // 2
+            # Convert back to hex string
+            return f"#{r//256:02x}{g//256:02x}{b//256:02x}"
+        except tk.TclError:
+            # Fallback for systems that struggle with color conversion
+            return color1
+
+    # --- Glow Line Animation ---
+    def animate_glow(self):
+        """Randomly cycles the color of the glow line."""
+        colors = [self.text_primary, self.text_secondary, self.glow_blue, self.glow_purple]
+        self.glow_line.config(bg=random.choice(colors))
+        self.after(900, self.animate_glow)
+
+    # --- Button Hover Effect ---
+    def _hover_button(self, hover):
+        """Changes the gradient color on hover."""
+        if hover:
+            self.execute_button.itemconfig(
+                self.gradient_button,
+                fill=self._gradient(self.text_secondary, self.glow_purple)
+            )
+        else:
+            self.execute_button.itemconfig(
+                self.gradient_button,
+                fill=self._gradient(self.glow_blue, self.glow_purple)
+            )
+
+    # --- Reminder Methods ---
+    def add_reminder(self, task):
+        self.reminders.append(task)
+
+    def show_reminders(self):
+        if not self.reminders:
+            return "Jarvis: You have no active reminders."
+        text = "\nJarvis: Active Reminders:\n"
+        for i, t in enumerate(self.reminders, 1):
+            # Using custom tags for reminder formatting if we switch back to a standard button
+            text += f"  {i}. {t}\n" 
+        return text.strip()
+
+    def clear_reminders(self):
+        self.reminders = []
+
+    # --- UI Updates ---
+    def update_history(self, message):
+        """Appends a message to the history box with color tagging."""
+        self.history_text.config(state="normal")
+        tag = "user" if message.startswith("User:") else "jarvis"
+        self.history_text.insert(tk.END, message + "\n", tag)
+        self.history_text.config(state="disabled")
+        self.history_text.see(tk.END)
+
+    def speak(self, text):
+        """Displays text in history and attempts TTS."""
+        self.update_history(f"Jarvis: {text}")
+        # Starts TTS in a separate thread to prevent GUI freeze
+        threading.Thread(target=speak_tts, args=(text,)).start()
+
+    def execute_command(self):
+        """Handles command input from the Entry field."""
+        query = self.command_entry.get()
+        if not query:
+            return
+        
+        # Display user query and clear input box
+        self.update_history(f"User: {query}")
+        self.command_entry.delete(0, tk.END)
+        
+        # Handle the QUIT command locally
+        if query.lower().strip() in ["quit", "exit", "close"]:
+            self.speak("Goodbye, sir. Shutting down systems.")
+            self.after(1200, self.destroy)
+            return
+            
+        # Run the core logic in a separate thread to prevent GUI freeze
+        threading.Thread(target=main_logic, args=(query, self)).start()
+
+    def initial_greeting(self):
+        """The welcome message displayed after the window loads."""
+        self.speak("Quantum systems online. Jarvis interface ready for your command, sir.")
+
+# ----------------------------------------------------------------------
+# 5. Application Execution
+# ----------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app = JarvisApp()
+    app.mainloop()
