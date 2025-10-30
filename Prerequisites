@@ -1,0 +1,11 @@
+# Requirements file for the J.A.R.V.I.S. Command Interface (Python 3.x)
+# Install all required libraries using: pip install -r requirements.txt
+
+requests          # Core library for API interaction and web requests
+PyPDF2            # For text extraction from PDF documents
+python-docx       # For text extraction from Microsoft Word (.docx) documents
+psutil            # For system information and monitoring
+pyinstaller       # Utility for compiling to a standalone executable (.exe)
+```eof
+
+Make sure to upload this file, along with your `README.md` and `SETUP_GUIDE.md`, to your GitHub repository!
