@@ -1,0 +1,67 @@
+🧑‍💻 J.A.R.V.I.S. Deployment Guide
+
+This document outlines the mandatory procedures for installing the prerequisite software, securely configuring the API credential, and deploying the J.A.R.V.I.S. assistant.
+
+Section I: Prerequisite Installation and Environment Setup
+
+Successful operation of the application requires proper initialization of the Python environment and installation of dependencies.
+
+Python Requirement: It is imperative that a modern version of the Python 3 interpreter (specifically version 3.8 or newer) is installed on the local machine.
+
+Project Acquisition: The project files must be cloned or downloaded into a designated local directory.
+
+Command Line Access: Access the system command-line interface (CLI), such as the Terminal or PowerShell, and navigate to the project root directory where the jarvis_core.py file is located.
+
+cd /path/to/JarvisProject
+
+
+Dependency Installation: Execute the following command to install all requisite libraries specified in the requirements.txt file:
+
+pip install -r requirements.txt
+
+
+Section II: Mandatory Security and API Configuration
+
+To ensure the confidentiality of the Gemini API Key and prevent its exposure on version control platforms, the key must be supplied via an environment variable.
+
+Credential Acquisition: A functional Gemini API Key must be obtained from the official Google AI documentation.
+
+Environment Variable Assignment: The following procedure for variable assignment is essential and must be executed prior to launching the application. The environment variable must be named GEMINI_API_KEY.
+
+Operating System
+
+Command for Session-Based Assignment
+
+Windows (Command Prompt/PowerShell)
+
+set GEMINI_API_KEY=YOUR_API_KEY_HERE
+
+Linux/macOS (Terminal)
+
+export GEMINI_API_KEY=YOUR_API_KEY_HERE
+
+Note: Substitute YOUR_API_KEY_HERE with the actual credential obtained. It should be recognized that this assignment is typically temporary and valid only for the current terminal session. Permanent configuration necessitates updating system-level environment variables.
+
+Section III: Application Deployment
+
+Upon successful installation of dependencies and configuration of the API variable, the application may be deployed using one of the following methods.
+
+Option A: Run Directly (Requires Installed Python Interpreter)
+
+The primary Python script can be executed directly via the interpreter:
+
+python jarvis_core.py
+
+
+Option B: Compilation to Standalone Executable (Recommended for Distribution and Aesthetic Consistency)
+
+This method utilizes PyInstaller to produce a single, self-contained executable file, which embeds the application's custom icon and eliminates the necessity for a visible Python installation on the target system.
+
+Icon File Verification: Verification of the icon file (Screenshot 2025-10-30 234502.ico) within the project root directory is required.
+
+Compilation Command: Execute the following command to initiate the build process:
+
+pyinstaller --onefile --icon="Screenshot 2025-10-30 234502.ico" jarvis_core.py
+
+
+Application Launch: The final program file, designated as jarvis_core.exe, will be located in the newly generated dist folder. The application is executed by double-clicking this file.
